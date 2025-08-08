@@ -36,6 +36,7 @@ class ModelConfig:
     d_ff: int = 1536
     batch_size: int = 24
     max_steps: int = 5000
+    use_swiglu: bool = False  # Toggle between FeedForward and SwiGLU
 
     # Training parameters
     gradient_accumulation_steps: int = 4
@@ -235,11 +236,28 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.linear2(self.dropout(F.silu(self.linear1(x))))
 
+class SwiGLU(nn.Module):
+    def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
+        super().__init__()
+        self.gate = nn.Linear(d_model, d_ff, bias=False)
+        self.up = nn.Linear(d_model, d_ff, bias=False)
+        self.down = nn.Linear(d_ff, d_model, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        gate_output = F.silu(self.gate(x))
+        up_output = self.up(x)
+        gated = gate_output * up_output
+        return self.down(self.dropout(gated))
+
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, max_seq_len: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, max_seq_len: int, dropout: float = 0.1, use_swiglu: bool = False):
         super().__init__()
         self.attention = MultiHeadAttention(d_model, n_heads, max_seq_len, dropout)
-        self.feed_forward = FeedForward(d_model, d_ff, dropout)
+        if use_swiglu:
+            self.feed_forward = SwiGLU(d_model, d_ff, dropout)
+        else:
+            self.feed_forward = FeedForward(d_model, d_ff, dropout)
         self.norm1 = nn.RMSNorm(d_model)
         self.norm2 = nn.RMSNorm(d_model)
         self.dropout = nn.Dropout(dropout)
@@ -260,7 +278,7 @@ class MinimalLLM(nn.Module):
         self.position_dropout = nn.Dropout(config.dropout)
 
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(config.d_model, config.n_heads, config.d_ff, config.max_seq_len, config.dropout)
+            TransformerBlock(config.d_model, config.n_heads, config.d_ff, config.max_seq_len, config.dropout, config.use_swiglu)
             for _ in range(config.n_layers)
         ])
 
@@ -349,7 +367,8 @@ def setup_muon_optimizer(model: nn.Module, config: ModelConfig):
 
 def train_model(config: ModelConfig, train_loader: DataLoader, val_loader: DataLoader):
     """Train the model with Muon optimizer"""
-    print(f"\n🚀 Training Small model with Muon optimizer")
+    ff_type = "SwiGLU" if config.use_swiglu else "Standard FF"
+    print(f"\n🚀 Training model with {ff_type} and Muon optimizer")
 
     # Initialize model
     set_seed(42)
