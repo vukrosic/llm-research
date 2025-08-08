@@ -123,8 +123,8 @@ def run_comparison():
     
     # Shared config
     base_config = ModelConfig(
-        max_steps=4000,  # Extended training for better comparison
-        eval_every=250,
+        max_steps=400,  # Reduced for faster testing
+        eval_every=200,  # More frequent evaluation
         batch_size=16,   # Smaller batch for faster iteration
         num_documents=1000,  # Less data for speed
         max_tokens=250000
@@ -227,6 +227,33 @@ def run_comparison():
     
     print(f"\n🏆 Best performing: {sorted_results[0][0]}")
     print(f"📈 Best improvement over Standard FF: {(baseline_loss - sorted_results[0][1]['metrics']['val_loss']) / baseline_loss * 100:+.1f}%")
+    
+    # Write results to text file
+    with open('experiment_1_results.txt', 'w') as f:
+        f.write("EXPERIMENT 1: FEEDFORWARD ARCHITECTURE COMPARISON\n")
+        f.write("=" * 60 + "\n\n")
+        f.write(f"Training Steps: {base_config.max_steps}\n")
+        f.write(f"Batch Size: {base_config.batch_size}\n")
+        f.write(f"Model: {base_config.d_model}d, {base_config.n_layers}L, {base_config.n_heads}H\n\n")
+        
+        f.write(f"{'Rank':<4} {'Architecture':<12} {'Params':<10} {'Time(min)':<9} {'Val Loss':<9} {'Perplexity':<10}\n")
+        f.write("-" * 70 + "\n")
+        
+        for rank, (name, result) in enumerate(sorted_results, 1):
+            params = f"{result['total_params']/1e6:.1f}M"
+            time_min = f"{result['training_time']/60:.1f}"
+            val_loss = f"{result['metrics']['val_loss']:.4f}"
+            ppl = f"{result['metrics']['val_perplexity']:.1f}"
+            
+            improvement = (baseline_loss - result['metrics']['val_loss']) / baseline_loss * 100
+            improvement_str = f"({improvement:+.1f}%)" if name != "Standard FF" else "(baseline)"
+            
+            f.write(f"{rank:<4} {name:<12} {params:<10} {time_min:<9} {val_loss:<9} {ppl:<10} {improvement_str}\n")
+        
+        f.write(f"\nBest performing: {sorted_results[0][0]}\n")
+        f.write(f"Best improvement: {(baseline_loss - sorted_results[0][1]['metrics']['val_loss']) / baseline_loss * 100:+.1f}%\n")
+    
+    print(f"📝 Results saved to experiment_1_results.txt")
     
     # Plot training curves
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2']
