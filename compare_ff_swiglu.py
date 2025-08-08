@@ -165,6 +165,8 @@ def run_comparison():
         
         # Create new config with feedforward variant
         config_dict = base_config.__dict__.copy()
+        # Remove computed fields that shouldn't be passed to constructor
+        config_dict.pop('d_k', None)
         config_dict.update(ff_config)
         config = ModelConfig(**config_dict)
         
