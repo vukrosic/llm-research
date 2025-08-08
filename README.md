@@ -1,42 +1,20 @@
-# FeedForward vs SwiGLU Experiment
+# FeedForward vs SwiGLU in LLM Training
 
-## Overview
-Minimal comparison between standard feedforward layers and SwiGLU activation in transformer architectures.
+Minimal experiment comparing standard feedforward vs SwiGLU in transformer training.
 
-## What's Being Compared
-
-**Standard FeedForward:**
-```python
-def forward(x):
-    return linear2(dropout(silu(linear1(x))))
-```
-
-**SwiGLU:**
-```python
-def forward(x):
-    gate = silu(gate_proj(x))
-    up = up_proj(x)
-    return down_proj(dropout(gate * up))
-```
-
-## Fair Comparison
-
-- **Same d_model**: Both input/output 384 dimensions
-- **Same d_ff**: Both use 1536 hidden dimensions  
-- **Same activation**: Both use SiLU/Swish
-- **Same dropout**: Applied consistently
-- **Same initialization**: Standard PyTorch defaults
-
-## Key Differences
-
-- **Parameters**: SwiGLU has 1.5x more parameters (needs separate gate + up projections)
-- **Computation**: SwiGLU does element-wise gating (multiplication)
-- **Memory**: SwiGLU uses more intermediate activations
-
-## Running
+## Usage
 
 ```bash
-python ff_vs_swiglu_experiment.py
+python compare_ff_swiglu.py
 ```
 
-Benchmarks forward/backward speed, memory usage, and parameter count.
+Trains identical models with both feedforward types and compares performance.
+
+## Implementation
+
+- Standard FF: `linear2(dropout(silu(linear1(x))))`
+- SwiGLU: `down(dropout(silu(gate(x)) * up(x)))`
+- Fair comparison: same architecture, data, training setup
+- SwiGLU has 1.5x parameters but often better quality
+
+Part of [llm-research](https://github.com/vukrosic/llm-research)
