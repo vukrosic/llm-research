@@ -37,6 +37,7 @@ class ModelConfig:
     batch_size: int = 24
     max_steps: int = 5000
     use_swiglu: bool = False  # Toggle between FeedForward and SwiGLU
+    ff_activation: str = "relu"  # Activation function for feedforward layers
 
     # Training parameters
     gradient_accumulation_steps: int = 4
@@ -227,14 +228,45 @@ class MultiHeadAttention(nn.Module):
         return self.w_o(attn_output)
 
 class FeedForward(nn.Module):
-    def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1, activation: str = "relu"):
         super().__init__()
-        self.linear1 = nn.Linear(d_model, d_ff, bias=False)
+        self.activation = activation
+        
+        if activation in ["glu", "reglu", "geglu"]:
+            # Gated variants need 2x hidden size for gate
+            self.linear1 = nn.Linear(d_model, d_ff * 2, bias=False)
+        else:
+            self.linear1 = nn.Linear(d_model, d_ff, bias=False)
+            
         self.linear2 = nn.Linear(d_ff, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.linear2(self.dropout(F.silu(self.linear1(x))))
+        if self.activation == "relu":
+            return self.linear2(self.dropout(F.relu(self.linear1(x))))
+        elif self.activation == "gelu":
+            return self.linear2(self.dropout(F.gelu(self.linear1(x))))
+        elif self.activation == "silu":
+            return self.linear2(self.dropout(F.silu(self.linear1(x))))
+        elif self.activation == "mish":
+            return self.linear2(self.dropout(F.mish(self.linear1(x))))
+        elif self.activation == "glu":
+            # Standard GLU with sigmoid gate
+            x1 = self.linear1(x)
+            gate, value = x1.chunk(2, dim=-1)
+            return self.linear2(self.dropout(torch.sigmoid(gate) * value))
+        elif self.activation == "reglu":
+            # ReLU + GLU
+            x1 = self.linear1(x)
+            gate, value = x1.chunk(2, dim=-1)
+            return self.linear2(self.dropout(F.relu(gate) * value))
+        elif self.activation == "geglu":
+            # GELU + GLU
+            x1 = self.linear1(x)
+            gate, value = x1.chunk(2, dim=-1)
+            return self.linear2(self.dropout(F.gelu(gate) * value))
+        else:
+            raise ValueError(f"Unknown activation: {self.activation}")
 
 class SwiGLU(nn.Module):
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
@@ -251,13 +283,13 @@ class SwiGLU(nn.Module):
         return self.down(self.dropout(gated))
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, max_seq_len: int, dropout: float = 0.1, use_swiglu: bool = False):
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, max_seq_len: int, dropout: float = 0.1, use_swiglu: bool = False, ff_activation: str = "relu"):
         super().__init__()
         self.attention = MultiHeadAttention(d_model, n_heads, max_seq_len, dropout)
         if use_swiglu:
             self.feed_forward = SwiGLU(d_model, d_ff, dropout)
         else:
-            self.feed_forward = FeedForward(d_model, d_ff, dropout)
+            self.feed_forward = FeedForward(d_model, d_ff, dropout, ff_activation)
         self.norm1 = nn.RMSNorm(d_model)
         self.norm2 = nn.RMSNorm(d_model)
         self.dropout = nn.Dropout(dropout)
@@ -278,7 +310,7 @@ class MinimalLLM(nn.Module):
         self.position_dropout = nn.Dropout(config.dropout)
 
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(config.d_model, config.n_heads, config.d_ff, config.max_seq_len, config.dropout, config.use_swiglu)
+            TransformerBlock(config.d_model, config.n_heads, config.d_ff, config.max_seq_len, config.dropout, config.use_swiglu, config.ff_activation)
             for _ in range(config.n_layers)
         ])
 

@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
-Compare FeedForward vs SwiGLU in actual LLM training
+Compare 7 different FeedForward architectures in actual LLM training:
+1. Standard FF (ReLU)
+2. SwiGLU 
+3. GELU FF
+4. Mish FF
+5. GLU (Gated Linear Unit)
+6. ReGLU (ReLU + GLU)
+7. GeGLU (GELU + GLU)
 """
 
 import torch
@@ -12,6 +19,7 @@ import torch.nn.functional as F
 from torch.cuda.amp import autocast, GradScaler
 import math
 from tqdm import tqdm
+import numpy as np
 
 def train_model_with_history(config: ModelConfig, train_loader: DataLoader, val_loader: DataLoader):
     """Modified train_model that returns loss history"""
@@ -115,7 +123,7 @@ def run_comparison():
     
     # Shared config
     base_config = ModelConfig(
-        max_steps=2000,  # Increased for better comparison
+        max_steps=4000,  # Extended training for better comparison
         eval_every=250,
         batch_size=16,   # Smaller batch for faster iteration
         num_documents=1000,  # Less data for speed
@@ -139,36 +147,28 @@ def run_comparison():
     
     results = {}
     
-    # Test both configurations
-    for use_swiglu in [False, True]:
+    # Define all feedforward variants to test
+    ff_variants = [
+        ("Standard FF", {"use_swiglu": False, "ff_activation": "relu"}),
+        ("SwiGLU", {"use_swiglu": True, "ff_activation": "silu"}),
+        ("GELU FF", {"use_swiglu": False, "ff_activation": "gelu"}),
+        ("Mish FF", {"use_swiglu": False, "ff_activation": "mish"}),
+        ("GLU", {"use_swiglu": False, "ff_activation": "glu"}),
+        ("ReGLU", {"use_swiglu": False, "ff_activation": "reglu"}),
+        ("GeGLU", {"use_swiglu": False, "ff_activation": "geglu"}),
+    ]
+    
+    # Test all configurations
+    for ff_name, ff_config in ff_variants:
         # Reset seed before each training run for fair comparison
         set_seed(42)
         
-        # Create new config with same parameters but different use_swiglu
-        config = ModelConfig(
-            d_model=base_config.d_model,
-            n_heads=base_config.n_heads,
-            n_layers=base_config.n_layers,
-            d_ff=base_config.d_ff,
-            batch_size=base_config.batch_size,
-            max_steps=base_config.max_steps,
-            use_swiglu=use_swiglu,
-            gradient_accumulation_steps=base_config.gradient_accumulation_steps,
-            muon_lr=base_config.muon_lr,
-            max_seq_len=base_config.max_seq_len,
-            num_documents=base_config.num_documents,
-            max_tokens=base_config.max_tokens,
-            eval_every=base_config.eval_every,
-            eval_steps=base_config.eval_steps,
-            weight_decay=base_config.weight_decay,
-            dropout=base_config.dropout,
-            grad_clip=base_config.grad_clip,
-            use_amp=base_config.use_amp,
-            vocab_size=base_config.vocab_size
-        )
+        # Create new config with feedforward variant
+        config_dict = base_config.__dict__.copy()
+        config_dict.update(ff_config)
+        config = ModelConfig(**config_dict)
         
-        ff_type = "SwiGLU" if use_swiglu else "Standard FF"
-        print(f"\n{'='*20} {ff_type} {'='*20}")
+        print(f"\n{'='*20} {ff_name} {'='*20}")
         
         # Clear GPU cache before timing
         if torch.cuda.is_available():
@@ -185,82 +185,115 @@ def run_comparison():
         # Count parameters
         total_params = sum(p.numel() for p in model.parameters())
         
-        results[ff_type] = {
+        results[ff_name] = {
             'metrics': metrics,
             'training_time': training_time,
             'total_params': total_params,
             'train_losses': train_losses,
             'val_losses': val_losses,
-            'steps': steps
+            'steps': steps,
+            'model': model  # Store model for weight analysis
         }
         
         print(f"⏱️  Training time: {training_time/60:.1f} minutes")
         print(f"📊 Parameters: {total_params:,}")
+        print(f"🎯 Final Loss: {metrics['val_loss']:.4f}, PPL: {metrics['val_perplexity']:.2f}")
     
     # Compare results
-    print("\n" + "="*60)
-    print("🏆 COMPARISON RESULTS")
-    print("="*60)
+    print("\n" + "="*80)
+    print("🏆 FEEDFORWARD ARCHITECTURE COMPARISON RESULTS")
+    print("="*80)
     
-    ff_result = results["Standard FF"]
-    swiglu_result = results["SwiGLU"]
+    # Sort by validation loss (best first)
+    sorted_results = sorted(results.items(), key=lambda x: x[1]['metrics']['val_loss'])
     
-    print(f"📊 Parameters:")
-    print(f"  Standard FF: {ff_result['total_params']:,}")
-    print(f"  SwiGLU:      {swiglu_result['total_params']:,}")
-    print(f"  Ratio:       {swiglu_result['total_params']/ff_result['total_params']:.2f}x")
+    print(f"{'Rank':<4} {'Architecture':<12} {'Params':<10} {'Time(min)':<9} {'Val Loss':<9} {'Perplexity':<10}")
+    print("-" * 70)
     
-    print(f"\n⏱️  Training Time:")
-    print(f"  Standard FF: {ff_result['training_time']/60:.1f} min")
-    print(f"  SwiGLU:      {swiglu_result['training_time']/60:.1f} min")
-    print(f"  Ratio:       {swiglu_result['training_time']/ff_result['training_time']:.2f}x")
+    baseline_loss = results["Standard FF"]['metrics']['val_loss']
     
-    print(f"\n🎯 Final Performance:")
-    print(f"  Standard FF - Loss: {ff_result['metrics']['val_loss']:.4f}, PPL: {ff_result['metrics']['val_perplexity']:.2f}")
-    print(f"  SwiGLU      - Loss: {swiglu_result['metrics']['val_loss']:.4f}, PPL: {swiglu_result['metrics']['val_perplexity']:.2f}")
+    for rank, (name, result) in enumerate(sorted_results, 1):
+        params = f"{result['total_params']/1e6:.1f}M"
+        time_min = f"{result['training_time']/60:.1f}"
+        val_loss = f"{result['metrics']['val_loss']:.4f}"
+        ppl = f"{result['metrics']['val_perplexity']:.1f}"
+        
+        improvement = (baseline_loss - result['metrics']['val_loss']) / baseline_loss * 100
+        improvement_str = f"({improvement:+.1f}%)" if name != "Standard FF" else "(baseline)"
+        
+        print(f"{rank:<4} {name:<12} {params:<10} {time_min:<9} {val_loss:<9} {ppl:<10} {improvement_str}")
     
-    loss_improvement = (ff_result['metrics']['val_loss'] - swiglu_result['metrics']['val_loss']) / ff_result['metrics']['val_loss'] * 100
-    ppl_improvement = (ff_result['metrics']['val_perplexity'] - swiglu_result['metrics']['val_perplexity']) / ff_result['metrics']['val_perplexity'] * 100
-    
-    print(f"\n📈 SwiGLU vs Standard FF:")
-    print(f"  Loss improvement: {loss_improvement:+.1f}%")
-    print(f"  PPL improvement:  {ppl_improvement:+.1f}%")
-    
-    if loss_improvement > 0:
-        print(f"  ✅ SwiGLU achieved better loss despite {swiglu_result['total_params']/ff_result['total_params']:.1f}x more parameters")
-    else:
-        print(f"  ❌ SwiGLU performed worse despite {swiglu_result['total_params']/ff_result['total_params']:.1f}x more parameters")
+    print(f"\n🏆 Best performing: {sorted_results[0][0]}")
+    print(f"📈 Best improvement over Standard FF: {(baseline_loss - sorted_results[0][1]['metrics']['val_loss']) / baseline_loss * 100:+.1f}%")
     
     # Plot training curves
-    plt.figure(figsize=(12, 5))
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2']
+    
+    plt.figure(figsize=(16, 10))
     
     # Training loss
-    plt.subplot(1, 2, 1)
-    plt.plot(ff_result['steps'], ff_result['train_losses'], 'b-', label='Standard FF', alpha=0.7)
-    plt.plot(swiglu_result['steps'], swiglu_result['train_losses'], 'r-', label='SwiGLU', alpha=0.7)
+    plt.subplot(2, 2, 1)
+    for i, (name, result) in enumerate(results.items()):
+        plt.plot(result['steps'], result['train_losses'], color=colors[i], label=name, alpha=0.8, linewidth=1.5)
     plt.xlabel('Steps')
     plt.ylabel('Training Loss')
     plt.title('Training Loss Comparison')
-    plt.legend()
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.grid(True, alpha=0.3)
     
     # Validation loss
-    plt.subplot(1, 2, 2)
-    val_steps = list(range(0, len(ff_result['val_losses']) * base_config.eval_every, base_config.eval_every))
-    if len(val_steps) > len(ff_result['val_losses']):
-        val_steps = val_steps[:len(ff_result['val_losses'])]
-    plt.plot(val_steps, ff_result['val_losses'], 'b-', label='Standard FF', alpha=0.7)
-    plt.plot(val_steps, swiglu_result['val_losses'], 'r-', label='SwiGLU', alpha=0.7)
+    plt.subplot(2, 2, 2)
+    for i, (name, result) in enumerate(results.items()):
+        val_steps = list(range(0, len(result['val_losses']) * base_config.eval_every, base_config.eval_every))
+        if len(val_steps) > len(result['val_losses']):
+            val_steps = val_steps[:len(result['val_losses'])]
+        plt.plot(val_steps, result['val_losses'], color=colors[i], label=name, alpha=0.8, linewidth=1.5)
     plt.xlabel('Steps')
     plt.ylabel('Validation Loss')
     plt.title('Validation Loss Comparison')
-    plt.legend()
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    
+    # Final performance bar chart
+    plt.subplot(2, 2, 3)
+    names = list(results.keys())
+    final_losses = [results[name]['metrics']['val_loss'] for name in names]
+    bars = plt.bar(range(len(names)), final_losses, color=colors[:len(names)], alpha=0.7)
+    plt.xlabel('Architecture')
+    plt.ylabel('Final Validation Loss')
+    plt.title('Final Performance Comparison')
+    plt.xticks(range(len(names)), names, rotation=45, ha='right')
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for bar, loss in zip(bars, final_losses):
+        plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.001, 
+                f'{loss:.3f}', ha='center', va='bottom', fontsize=9)
+    
+    # Weight distribution analysis
+    plt.subplot(2, 2, 4)
+    for i, (name, result) in enumerate(results.items()):
+        model = result['model']
+        # Get feedforward weights from first layer
+        ff_weights = []
+        for param_name, param in model.named_parameters():
+            if 'ff' in param_name.lower() and 'weight' in param_name:
+                ff_weights.extend(param.detach().cpu().flatten().numpy())
+                break  # Just use first FF layer
+        
+        if ff_weights:
+            plt.hist(ff_weights, bins=50, alpha=0.6, label=name, color=colors[i], density=True)
+    
+    plt.xlabel('Weight Value')
+    plt.ylabel('Density')
+    plt.title('FF Weight Distributions (Layer 1)')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('ff_vs_swiglu_comparison.png', dpi=150, bbox_inches='tight')
+    plt.savefig('ff_architectures_comparison.png', dpi=150, bbox_inches='tight')
     plt.show()
-    print(f"\n📊 Plot saved as 'ff_vs_swiglu_comparison.png'")
+    print(f"\n📊 Comprehensive plot saved as 'ff_architectures_comparison.png'")
 
 if __name__ == "__main__":
     run_comparison()
