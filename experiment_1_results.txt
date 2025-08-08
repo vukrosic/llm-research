@@ -1,0 +1,19 @@
+EXPERIMENT 1: FEEDFORWARD ARCHITECTURE COMPARISON
+============================================================
+
+Training Steps: 400
+Batch Size: 16
+Model: 384d, 6L, 8H
+
+Rank Architecture Params     Time(min) Val Loss  Perplexity
+----------------------------------------------------------------------
+1    SwiGLU       33.0M      0.2       4.5301    92.8       (+0.6%)
+2    GeGLU        33.0M      0.2       4.5355    93.3       (+0.5%)
+3    ReGLU        33.0M      0.2       4.5492    94.6       (+0.2%)
+4    Standard FF  29.5M      0.3       4.5567    95.3       (baseline)
+5    GELU FF      29.5M      0.2       4.6109    100.6      (-1.2%)
+6    Mish FF      29.5M      0.2       4.6486    104.4      (-2.0%)
+7    GLU          33.0M      0.2       4.6978    109.7      (-3.1%)
+
+Best performing: SwiGLU
+Best improvement: +0.6%
