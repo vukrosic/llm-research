@@ -40,8 +40,28 @@ def run_comparison():
     
     # Test both configurations
     for use_swiglu in [False, True]:
-        config = ModelConfig(**base_config.__dict__)
-        config.use_swiglu = use_swiglu
+        # Create new config with same parameters but different use_swiglu
+        config = ModelConfig(
+            d_model=base_config.d_model,
+            n_heads=base_config.n_heads,
+            n_layers=base_config.n_layers,
+            d_ff=base_config.d_ff,
+            batch_size=base_config.batch_size,
+            max_steps=base_config.max_steps,
+            use_swiglu=use_swiglu,
+            gradient_accumulation_steps=base_config.gradient_accumulation_steps,
+            muon_lr=base_config.muon_lr,
+            max_seq_len=base_config.max_seq_len,
+            num_documents=base_config.num_documents,
+            max_tokens=base_config.max_tokens,
+            eval_every=base_config.eval_every,
+            eval_steps=base_config.eval_steps,
+            weight_decay=base_config.weight_decay,
+            dropout=base_config.dropout,
+            grad_clip=base_config.grad_clip,
+            use_amp=base_config.use_amp,
+            vocab_size=base_config.vocab_size
+        )
         
         ff_type = "SwiGLU" if use_swiglu else "Standard FF"
         print(f"\n{'='*20} {ff_type} {'='*20}")
